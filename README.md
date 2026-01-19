@@ -1,6 +1,5 @@
-# eugene-middleware
-
-**Eugene - OpenAPI Interface Kit - oink!**
+# Eugene - OpenAPI INterface Kit - oink! 🐷
+## eugene-middleware
 
 HTTP middleware for OpenAPI 3.x request validation and security enforcement in Go.
 
