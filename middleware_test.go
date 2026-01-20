@@ -620,3 +620,356 @@ func TestMatchPath(t *testing.T) {
 		})
 	}
 }
+
+func TestMiddleware_BasePath(t *testing.T) {
+	opts := DefaultOptions()
+	opts.ValidateRequest = false
+	opts.BasePath = "/api/v1"
+
+	mw, err := New(testSpec, opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	t.Run("path with base path prefix", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/pets", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", rec.Code)
+		}
+	})
+
+	t.Run("path without base path prefix still works for unmatched routes", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/pets", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200 (no security on unmatched route), got %d", rec.Code)
+		}
+	})
+
+	t.Run("security enforced with base path", func(t *testing.T) {
+		opts := DefaultOptions()
+		opts.ValidateRequest = false
+		opts.BasePath = "/api/v1"
+		opts.Security.RegisterBearer("bearerAuth", func(ctx context.Context, token string) (*BearerAuth, error) {
+			if token == "valid" {
+				return &BearerAuth{Token: token}, nil
+			}
+			return nil, NewUnauthorizedError("bearerAuth", "invalid token")
+		})
+
+		mw, _ := New(testSpec, opts)
+		h := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusCreated)
+		}))
+
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/pets", strings.NewReader(`{"name":"Fluffy"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected status 401 (missing auth), got %d", rec.Code)
+		}
+
+		req = httptest.NewRequest(http.MethodPost, "/api/v1/pets", strings.NewReader(`{"name":"Fluffy"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer valid")
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Errorf("expected status 201, got %d", rec.Code)
+		}
+	})
+}
+
+func TestMiddleware_AllowedHosts(t *testing.T) {
+	opts := DefaultOptions()
+	opts.ValidateRequest = false
+	opts.AllowedHosts = []string{"api.example.com", "localhost:8080"}
+
+	mw, err := New(testSpec, opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	t.Run("allowed host", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "http://api.example.com/pets", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("allowed host with port", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "http://localhost:8080/pets", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("disallowed host", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "http://evil.com/pets", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("expected status 404, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+const testSpecWithServers = `
+openapi: "3.2.0"
+info:
+  title: Test API
+  version: "1.0"
+servers:
+  - url: https://api.example.com/v1
+  - url: https://staging.example.com/v1
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      security: []
+      responses:
+        "200":
+          description: OK
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+`
+
+func TestMiddleware_UseSchemaServersAsHosts(t *testing.T) {
+	opts := DefaultOptions()
+	opts.ValidateRequest = false
+	opts.UseSchemaServersAsHosts = true
+
+	mw, err := New(testSpecWithServers, opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	t.Run("host from schema servers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "https://api.example.com/pets", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("staging host from schema servers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "https://staging.example.com/pets", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("host not in schema servers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "https://unknown.example.com/pets", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("expected status 404, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestMiddleware_AllowedHostsOverridesSchema(t *testing.T) {
+	opts := DefaultOptions()
+	opts.ValidateRequest = false
+	opts.AllowedHosts = []string{"override.example.com"}
+	opts.UseSchemaServersAsHosts = true
+
+	mw, err := New(testSpecWithServers, opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	t.Run("explicit AllowedHosts takes precedence", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "https://override.example.com/pets", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200 (override host allowed), got %d", rec.Code)
+		}
+	})
+
+	t.Run("schema server host rejected when AllowedHosts set", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "https://api.example.com/pets", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("expected status 404 (schema host not in AllowedHosts), got %d", rec.Code)
+		}
+	})
+}
+
+func TestMiddleware_HostValidationDisabled(t *testing.T) {
+	opts := DefaultOptions()
+	opts.ValidateRequest = false
+
+	mw, err := New(testSpec, opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	t.Run("any host allowed when no host options set", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "https://any.host.com/pets", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", rec.Code)
+		}
+	})
+}
+
+func TestHostError(t *testing.T) {
+	err := NewHostError("evil.com", "host not allowed")
+	if err.StatusCode != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", err.StatusCode)
+	}
+	if err.Host != "evil.com" {
+		t.Errorf("expected host 'evil.com', got %q", err.Host)
+	}
+	if err.Error() != "host not allowed" {
+		t.Errorf("expected message 'host not allowed', got %q", err.Error())
+	}
+}
+
+func TestRouteError(t *testing.T) {
+	err := NewRouteNotFoundError("/unknown", "GET")
+	if err.StatusCode != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", err.StatusCode)
+	}
+	if err.Path != "/unknown" {
+		t.Errorf("expected path '/unknown', got %q", err.Path)
+	}
+	if err.Method != "GET" {
+		t.Errorf("expected method 'GET', got %q", err.Method)
+	}
+	if err.Error() != "route not found" {
+		t.Errorf("expected message 'route not found', got %q", err.Error())
+	}
+}
+
+func TestMiddleware_StrictRoutes_Enabled(t *testing.T) {
+	opts := DefaultOptions()
+	opts.ValidateRequest = false
+	opts.StrictRoutes = true
+
+	mw, err := New(testSpec, opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	t.Run("known route passes through", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/pets", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("unknown route returns 404", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/unknown", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("expected status 404, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("unknown method on known path returns 404", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPatch, "/pets", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("expected status 404, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestMiddleware_StrictRoutes_Disabled(t *testing.T) {
+	opts := DefaultOptions()
+	opts.ValidateRequest = false
+	opts.StrictRoutes = false
+
+	mw, err := New(testSpec, opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	t.Run("unknown route passes through", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/unknown", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200 (pass through), got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("unknown method passes through", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPatch, "/pets", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200 (pass through), got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}

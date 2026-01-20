@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/pb33f/libopenapi"
 	v3 "github.com/pb33f/libopenapi/datamodel/high/v3"
@@ -65,6 +67,17 @@ func NewFromBase64(encoded string, opts *Options) (*Middleware, error) {
 // Handler returns an http.Handler middleware.
 func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := m.validateHost(r); err != nil {
+			m.handleHostError(w, r, err)
+			return
+		}
+
+		op := m.findOperation(r.URL.Path, r.Method)
+		if op == nil && m.options.StrictRoutes {
+			m.handleRouteError(w, r, NewRouteNotFoundError(r.URL.Path, r.Method))
+			return
+		}
+
 		if m.options.ValidateRequest {
 			valid, errors := m.validator.ValidateHttpRequestSync(r)
 			if !valid {
@@ -73,7 +86,7 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 			}
 		}
 
-		if err := m.validateSecurity(w, r); err != nil {
+		if err := m.validateSecurityWithOp(w, r, op); err != nil {
 			return
 		}
 
@@ -81,12 +94,11 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 	})
 }
 
-func (m *Middleware) validateSecurity(w http.ResponseWriter, r *http.Request) error {
+func (m *Middleware) validateSecurityWithOp(w http.ResponseWriter, r *http.Request, op *v3.Operation) error {
 	if m.model == nil || m.model.Model.Paths == nil {
 		return nil
 	}
 
-	op := m.findOperation(r.URL.Path, r.Method)
 	if op == nil {
 		return nil
 	}
@@ -153,6 +165,13 @@ func (m *Middleware) validateSecurity(w http.ResponseWriter, r *http.Request) er
 func (m *Middleware) findOperation(path, method string) *v3.Operation {
 	if m.model.Model.Paths == nil || m.model.Model.Paths.PathItems == nil {
 		return nil
+	}
+
+	if m.options.BasePath != "" {
+		path = strings.TrimPrefix(path, m.options.BasePath)
+		if path == "" {
+			path = "/"
+		}
 	}
 
 	for pair := m.model.Model.Paths.PathItems.Oldest(); pair != nil; pair = pair.Next() {
@@ -269,6 +288,88 @@ func (m *Middleware) handleAuthError(w http.ResponseWriter, r *http.Request, err
 		response["required_scopes"] = authErr.Scopes
 	}
 	json.NewEncoder(w).Encode(response)
+}
+
+func (m *Middleware) validateHost(r *http.Request) error {
+	var allowedHosts []string
+
+	if len(m.options.AllowedHosts) > 0 {
+		allowedHosts = m.options.AllowedHosts
+	} else if m.options.UseSchemaServersAsHosts {
+		allowedHosts = m.extractHostsFromServers()
+	}
+
+	if len(allowedHosts) == 0 {
+		return nil
+	}
+
+	host := r.Host
+	for _, allowed := range allowedHosts {
+		if host == allowed {
+			return nil
+		}
+	}
+
+	return NewHostError(host, "host not allowed")
+}
+
+func (m *Middleware) extractHostsFromServers() []string {
+	if m.model == nil || m.model.Model.Servers == nil {
+		return nil
+	}
+
+	var hosts []string
+	for _, server := range m.model.Model.Servers {
+		if server.URL == "" {
+			continue
+		}
+		parsed, err := url.Parse(server.URL)
+		if err != nil {
+			continue
+		}
+		if parsed.Host != "" {
+			hosts = append(hosts, parsed.Host)
+		}
+	}
+	return hosts
+}
+
+func (m *Middleware) handleHostError(w http.ResponseWriter, r *http.Request, err error) {
+	hostErr, ok := err.(*HostError)
+	if !ok {
+		hostErr = NewHostError(r.Host, err.Error())
+	}
+
+	if m.options.ErrorHandler != nil {
+		m.options.ErrorHandler(w, r, hostErr)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(hostErr.StatusCode)
+	json.NewEncoder(w).Encode(map[string]any{
+		"error":   "host_not_allowed",
+		"message": hostErr.Message,
+	})
+}
+
+func (m *Middleware) handleRouteError(w http.ResponseWriter, r *http.Request, err error) {
+	routeErr, ok := err.(*RouteError)
+	if !ok {
+		routeErr = NewRouteNotFoundError(r.URL.Path, r.Method)
+	}
+
+	if m.options.ErrorHandler != nil {
+		m.options.ErrorHandler(w, r, routeErr)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(routeErr.StatusCode)
+	json.NewEncoder(w).Encode(map[string]any{
+		"error":   "route_not_found",
+		"message": routeErr.Message,
+	})
 }
 
 func formatValidationErrors(errors []*validatorErrors.ValidationError) []map[string]any {

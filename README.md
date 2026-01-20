@@ -310,6 +310,18 @@ opts := &middleware.Options{
     ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
         // Handle validation and auth errors
     },
+
+    // URL path prefix to strip before route matching (e.g., "/api/v1")
+    BasePath: "",
+
+    // Explicit list of allowed Host header values
+    AllowedHosts: []string{"api.example.com", "localhost:8080"},
+
+    // Use servers from OpenAPI spec for host validation
+    UseSchemaServersAsHosts: false,
+
+    // Return 404 for routes not defined in spec (default: false = pass through)
+    StrictRoutes: false,
 }
 ```
 

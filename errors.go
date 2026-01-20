@@ -57,3 +57,45 @@ func NewForbiddenError(scheme, message string, scopes []string) *AuthError {
 		Scopes:     scopes,
 	}
 }
+
+// HostError represents host validation failures.
+type HostError struct {
+	StatusCode int
+	Host       string
+	Message    string
+}
+
+func (e *HostError) Error() string {
+	return e.Message
+}
+
+// NewHostError creates a 404 error for host mismatch.
+func NewHostError(host, message string) *HostError {
+	return &HostError{
+		StatusCode: http.StatusNotFound,
+		Host:       host,
+		Message:    message,
+	}
+}
+
+// RouteError represents route matching failures.
+type RouteError struct {
+	StatusCode int
+	Path       string
+	Method     string
+	Message    string
+}
+
+func (e *RouteError) Error() string {
+	return e.Message
+}
+
+// NewRouteNotFoundError creates a 404 error for unmatched routes.
+func NewRouteNotFoundError(path, method string) *RouteError {
+	return &RouteError{
+		StatusCode: http.StatusNotFound,
+		Path:       path,
+		Method:     method,
+		Message:    "route not found",
+	}
+}

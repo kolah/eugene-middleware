@@ -9,10 +9,14 @@ type ErrorHandler func(w http.ResponseWriter, r *http.Request, err error)
 
 // Options configures middleware behavior.
 type Options struct {
-	Security         *SecurityRegistry
-	ValidateRequest  bool
-	ValidateResponse bool
-	ErrorHandler     ErrorHandler
+	Security                *SecurityRegistry
+	ValidateRequest         bool
+	ValidateResponse        bool
+	ErrorHandler            ErrorHandler
+	BasePath                string
+	AllowedHosts            []string
+	UseSchemaServersAsHosts bool
+	StrictRoutes            bool
 }
 
 // DefaultOptions returns options with sensible defaults.
