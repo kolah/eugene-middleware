@@ -3,14 +3,17 @@ package middleware
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"slices"
+
 	"github.com/pb33f/libopenapi"
-	v3 "github.com/pb33f/libopenapi/datamodel/high/v3"
 	validator "github.com/pb33f/libopenapi-validator"
 	validatorErrors "github.com/pb33f/libopenapi-validator/errors"
+	v3 "github.com/pb33f/libopenapi/datamodel/high/v3"
 )
 
 // Middleware validates requests against an OpenAPI spec.
@@ -213,7 +216,7 @@ func splitPath(p string) []string {
 	}
 	var parts []string
 	start := 0
-	for i := 0; i < len(p); i++ {
+	for i := range len(p) {
 		if p[i] == '/' {
 			parts = append(parts, p[start:i])
 			start = i + 1
@@ -304,10 +307,8 @@ func (m *Middleware) validateHost(r *http.Request) error {
 	}
 
 	host := r.Host
-	for _, allowed := range allowedHosts {
-		if host == allowed {
-			return nil
-		}
+	if slices.Contains(allowedHosts, host) {
+		return nil
 	}
 
 	return NewHostError(host, "host not allowed")
@@ -335,7 +336,8 @@ func (m *Middleware) extractHostsFromServers() []string {
 }
 
 func (m *Middleware) handleHostError(w http.ResponseWriter, r *http.Request, err error) {
-	hostErr, ok := err.(*HostError)
+	var hostErr *HostError
+	ok := errors.As(err, &hostErr)
 	if !ok {
 		hostErr = NewHostError(r.Host, err.Error())
 	}
@@ -354,7 +356,8 @@ func (m *Middleware) handleHostError(w http.ResponseWriter, r *http.Request, err
 }
 
 func (m *Middleware) handleRouteError(w http.ResponseWriter, r *http.Request, err error) {
-	routeErr, ok := err.(*RouteError)
+	var routeErr *RouteError
+	ok := errors.As(err, &routeErr)
 	if !ok {
 		routeErr = NewRouteNotFoundError(r.URL.Path, r.Method)
 	}
