@@ -13,6 +13,14 @@ type SecurityHandler interface {
 	Handle(r *http.Request, scopes []string) (*SecurityContext, error)
 }
 
+// SecurityHandlerFunc is a function adapter for SecurityHandler interface.
+type SecurityHandlerFunc func(r *http.Request, scopes []string) (*SecurityContext, error)
+
+// Handle implements SecurityHandler.
+func (f SecurityHandlerFunc) Handle(r *http.Request, scopes []string) (*SecurityContext, error) {
+	return f(r, scopes)
+}
+
 // BearerHandler validates HTTP Bearer authentication.
 type BearerHandler func(ctx context.Context, token string) (*BearerAuth, error)
 
